@@ -1,8 +1,20 @@
 {
   "mcpServers": {
-    "playwright": {
+    "mongodb-lens": {
       "command": "npx",
-      "args": ["-y", "@executeautomation/playwright-mcp-server"]
+      "args": [
+        "-y",
+        "mongodb-lens@latest",
+        "mongodb://localhost:27017/"
+      ]
+    },
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://postgres:postgres@localhost:5432/convert"
+      ]
     }
   }
 }

@@ -26,16 +26,13 @@ from camel.toolkits import (
     FileWriteToolkit,
     ThinkingToolkit,
     TerminalToolkit,
-    MCPToolkit
 )
 from camel.types import ModelPlatformType, ModelType
 from camel.logger import set_log_level
 from camel.societies import RolePlaying
 from examples.google_sheet_browserbase_toolkit import GoogleSheetBrowserBaseToolkit
-#from examples.browser_toolkit import BrowserToolkit
-from owl.utils import DocumentProcessingToolkit
-from owl.utils.enhanced_role_playing import OwlRolePlaying, arun_society
-import asyncio
+
+from owl.utils import run_society, DocumentProcessingToolkit
 
 base_dir = pathlib.Path(__file__).parent.parent
 env_path = base_dir / "owl" / ".env"
@@ -46,145 +43,92 @@ import os
 from camel.toolkits.browser_toolkit import BaseBrowser
 from playwright.sync_api import sync_playwright
 
-import subprocess
-import socket
-import time
-import logging
 
-# --- Chrome Debugging Automation Helpers ---
-def is_debug_port_open(port=9222):
-    """Better port checking with detailed error logging"""
-    import socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        # Increase timeout for more reliable connection
-        s.settimeout(2.0)
-        s.connect(("127.0.0.1", port))
-        # Try sending a request to verify it's a Chrome debug port
-        s.send(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-        data = s.recv(1024)
-        s.close()
-        return True
-    except Exception as e:
-        print(f"Debug port check error: {str(e)}")
-        return False
-    finally:
-        try:
-            s.close()
-        except:
-            pass
+def run_debug_with_profile():
+    #This function is for when you want to run the new session in debug mode with current user profile
+    # This is important if we want a scenario where the current user work on their browser should not be disturbed
+    # This is useful when the user want to keep working while the agent works in background
+    
+    # Terminate existing Chrome instances
+    #subprocess.run(['pkill', '-f', 'Google Chrome'], check=False)
+    #subprocess.run(['pkill', '-f', 'chromedriver'], check=False)
 
-def start_chrome_debug():
-    """This function is now handled directly in _init_cdp"""
-    # This function is kept for compatibility but no longer used directly
-    print("This function is deprecated. Debugging is now handled in _init_cdp.")
-    raise RuntimeError("This function should not be called directly now.")
+    # Remove lock files
+    chrome_profile = os.path.expanduser('~/Library/Application Support/Google/Chrome')
+    #lock_files = [
+    #os.path.join(chrome_profile, 'SingletonLock'),
+    #os.path.join(chrome_profile, 'SingletonSocket'),
+    #os.path.join(chrome_profile, 'SingletonCookie')
+    #]
+    #for lock_file in lock_files:
+    #    try:
+    #        if os.path.exists(lock_file):
+    #            os.remove(lock_file)
+    #    except Exception as e:
+    #        logging.warning(f"Failed to remove {lock_file}: {e}")
+
+    chrome_cmd = [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '--remote-debugging-port=9222',
+        #'--user-data-dir=/tmp/chrome-user-data',    
+        '--user-data-dir=' + chrome_profile,
+        '--no-first-run',
+        '--profile-directory=Default',
+        #'--no-sandbox',  # Add this to bypass sandboxing issues
+        #'--disable-automation',  # Reduce automation detection
+        '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',  # Realistic user agent
+        '--disable-gpu',
+        '--no-default-browser-check', 
+        #'--disable-features=ProcessPerSite',  # Prevent profile locking
+        #'--disable-dev-shm-usage',  # Fix shared memory issues
+        #'--disable-crash-reporter',  # Disable Crashpad to avoid macOS errors
+        #'--verbose',  # Add verbose logging
+        #'--enable-logging',  # Enable Chrome logging
+        #'--v=1'  # Set logging verbosity
+    ]
+    subprocess.Popen(chrome_cmd)
+    # Wait for Chrome to start
+    for _ in range(10):
+        if is_debug_port_open():
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Failed to start Chrome in remote debugging mode.")
 
 # Monkey-patch BaseBrowser.init to attach to Chrome via CDP, launching if needed
-# Will open a new tab in a Chrome window started by this script (not already-open Chrome)
+# This is to take over user current browser, it will open a new tab in a Chrome window started by this script (not already-open Chrome)
+# some users may not mind this, its useful if the user want to just sit and watch the browser while the agent works
 def _init_cdp(self):
-    """Connect to existing Chrome browser with your profile and login data"""
+    import os
+    import logging
+    import random
     try:
-        # Ensure playwright is initialized
         if not hasattr(self, 'playwright'):
             self.playwright = sync_playwright().start()
         
-        # Check if an existing Chrome is running with debugging enabled
-        print("Checking if Chrome is already running with debugging...")
-        if is_debug_port_open():
-            print("Found existing Chrome with debugging enabled, connecting directly...")
-            self.browser = self.playwright.chromium.connect_over_cdp(
-                "http://127.0.0.1:9222",
-                timeout=10000
-            )
-            print("Successfully connected to existing Chrome!")
+        chrome_profile = os.path.expanduser('~/Library/Application Support/Google/Chrome')
 
-            self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-            self.page = self.context.new_page()
-            self.page.set_viewport_size({"width": 1920, "height": 1080})  # Full HD
-            return
-
-        # If not, we need to close all existing Chrome processes and restart with debugging
-        print("No existing Chrome with debugging found.")
-        print("Please close ALL Chrome windows manually, then press Enter to continue...")
-        #input("Press Enter after closing all Chrome windows...")
-        
-        # Now we'll use a debug-able profile but copy cookies from main profile
-        print("Creating debug profile with your cookies...")
-        
-        # Create a debugging profile directory
-        import tempfile, shutil
-        debug_profile = tempfile.mkdtemp(prefix='chrome_debug_profile_')
-        print(f"Created debug profile at: {debug_profile}")
-        
-        # Path to main Chrome profile
-        main_profile = os.path.expanduser('~/Library/Application Support/Google/Chrome')
-        print(f"Your main profile is at: {main_profile}")
-        
-        # Try to copy login data from main profile to debug profile
-        try:
-            # Create Default directory in debug profile
-            os.makedirs(os.path.join(debug_profile, 'Default'), exist_ok=True)
-            
-            # Copy Login Data and Cookies files (contain your logins)
-            cookie_sources = [
-                os.path.join(main_profile, 'Default', 'Cookies'),
-                os.path.join(main_profile, 'Default', 'Login Data'), 
-                os.path.join(main_profile, 'Default', 'Web Data'),
-                os.path.join(main_profile, 'Default', 'History')
-            ]
-            
-            for source in cookie_sources:
-                if os.path.exists(source):
-                    dest = os.path.join(debug_profile, 'Default', os.path.basename(source))
-                    print(f"Copying {os.path.basename(source)} to debug profile")
-                    shutil.copy2(source, dest)
-        except Exception as e:
-            print(f"Error copying login data: {e}")
-        
-        # Command to open Chrome with debug profile
-        chrome_cmd = [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '--remote-debugging-port=9222',
-            f'--user-data-dir={debug_profile}', 
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--no-sandbox'
-        ]
-        
-        print("Starting Chrome with your profile...")
-        process = subprocess.Popen(chrome_cmd)
-        
-        # Wait for Chrome to start and debug port to be available
-        for attempt in range(20):
-            if is_debug_port_open():
-                print(f"Chrome started successfully after {attempt+1} attempts!")
-                break
-            time.sleep(1)
-            print("Waiting for Chrome to start...")
-        else:
-            print("Chrome failed to start with debugging enabled.")
-            raise RuntimeError("Failed to start Chrome with debugging enabled")
-        
-        # Connect to the browser
-        print("Connecting to Chrome...")
-        self.browser = self.playwright.chromium.connect_over_cdp(
-            "http://127.0.0.1:9222",
-            timeout=30000
+        # Launch Chrome with existing profile and human-like settings
+        self.context = self.playwright.chromium.launch_persistent_context(
+            user_data_dir=chrome_profile,
+            executable_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            headless=False,  # Visible for debugging; set to True for headless
+            args=[
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-dev-shm-usage',
+                '--disable-crash-reporter',
+                #'--disable-gpu',
+                '--no-sandbox',   
+                #'--disable-automation',  # Reduce automation detection
+                #'--disable-blink-features=AutomationControlled',  # Hide automation flags
+                #'--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'  # Realistic user agent
+            ],
+            #ignore_default_args=['--enable-automation'],  # Further hide automation
         )
-        print("Successfully connected to Chrome with your profile!")
-        
-        #old code
-        # browser = self.playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
-        #ctx = browser.contexts[0]
-        #self.context = ctx
-        #self.page = ctx.new_page()
-
-        # Set up browser context and page
-        self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+        self.browser = self.context.browser
         self.page = self.context.new_page()
-        self.page.set_viewport_size({"width": 1920, "height": 1080})  # Full HD
-        
+        self.page.set_viewport_size({"width": 1920, "height": 1080})
+
     except Exception as e:
         logging.error(f"BaseBrowser initialization failed: {e}")
         raise
@@ -194,7 +138,7 @@ BaseBrowser.init = _init_cdp
 set_log_level(level="DEBUG")
 
 
-def construct_society(question: str) -> OwlRolePlaying:
+def construct_society(question: str) -> RolePlaying:
     r"""Construct a society of agents based on the given question.
 
     Args:
@@ -251,16 +195,8 @@ def construct_society(question: str) -> OwlRolePlaying:
         )
     browser_toolkit.browser.page.set_viewport_size({"width": 1920, "height": 1080})  # Full HD
 
-
-
-    config_path = pathlib.Path(__file__).parent / "mcp_servers_config.json"
-    mcp_toolkit = MCPToolkit(config_path=str(config_path))
-
-    asyncio.run(mcp_toolkit.connect())
-
     # Configure toolkits
     tools = [
-        *mcp_toolkit.get_tools(),
         *browser_toolkit.get_tools(),
         *VideoAnalysisToolkit(model=models["video"]).get_tools(),
         *AudioAnalysisToolkit().get_tools(),  # This requires OpenAI Key
@@ -289,7 +225,7 @@ def construct_society(question: str) -> OwlRolePlaying:
     }
 
     # Create and return the society
-    society = OwlRolePlaying(
+    society = RolePlaying(
         **task_kwargs,
         user_role_name="user",
         user_agent_kwargs=user_agent_kwargs,
@@ -300,7 +236,7 @@ def construct_society(question: str) -> OwlRolePlaying:
     return society
 
 
-async def main():
+def main():
     r"""Main function to run the OWL system with an example question."""
     # Default research question
     #default_task = "Navigate to https://www.linkedin.com/in/nonye/ , when it loads, DO NOT SCROLL DOWN; PRECISELY LOCATE THE MESSAGE BUTTON UNDER THE PROFILE PICTURE, CLICK IT, TYPE 'Hi', THEN LOCATE SEND BUTTON (aria-label='Send' EXACTLY) AND CLICK IT"
@@ -314,11 +250,11 @@ async def main():
 
     # Construct and run the society
     society = construct_society(task)
-    answer, chat_history, token_count = await arun_society(society)
+    answer, chat_history, token_count = run_society(society)
 
     # Output the result
     print(f"\033[94mAnswer: {answer}\033[0m")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

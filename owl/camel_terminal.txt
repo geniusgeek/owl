@@ -1,0 +1,5 @@
+CAMEL Terminal Session
+==================================================
+Working Directory: /Users/samuelekpe/owl/owl
+==================================================
+

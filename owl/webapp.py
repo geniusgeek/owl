@@ -12,7 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2023-2024 @ CAMEL-AI.org. All Rights Reserved. =========
 # Import from the correct module path
-from utils import run_society
+from owl.utils import run_society
+from owl.utils.enhanced_role_playing import OwlRolePlaying, arun_society
 import os
 import gradio as gr
 import time
@@ -25,6 +26,8 @@ from dotenv import load_dotenv, set_key, find_dotenv, unset_key
 import threading
 import queue
 import re
+import asyncio
+import nest_asyncio
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -809,13 +812,18 @@ def create_ui():
         result_queue = queue.Queue()
 
         def process_in_background():
+            # Create a new event loop for the thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)  # Set it as the current event loop for the thread
+            nest_asyncio.apply()  # Allow nested asyncio calls
             try:
                 result = run_owl(question, module_name)
                 result_queue.put(result)
             except Exception as e:
-                result_queue.put(
-                    (f"Error occurred: {str(e)}", "0", f"❌ Error: {str(e)}")
-                )
+                result_queue.put((f"Error occurred: {str(e)}", "0", f"❌ Error: {str(e)}"))
+            finally:
+                # Clean up the event loop
+                loop.close()
 
         # Start background processing thread
         bg_thread = threading.Thread(target=process_in_background)
@@ -1124,9 +1132,12 @@ def create_ui():
 
                 # Example questions
                 examples = [
-                    "Open Google search, summarize the github stars, fork counts, etc. of camel-ai's camel framework, and write the numbers into a python file using the plot package, save it locally, and run the generated python file.",
-                    "Browse Amazon and find a product that is attractive to programmers. Please provide the product name and price",
-                    "Write a hello world python file and save it locally",
+                    "Navigate to linkedin.com and help find customers for Grupa.io. Our ideal customers are early stage YC founders in the last 3 batches who are hiring founding AI engineers who want to work with the best from Google, Meta, OpenAI, Anthropic, and Huggingface.",
+                    "Navigate to linkedin.com and help find customers for Grupa.ai, our ideal customers are startup founders like YC founders who need help with sales, and marketing",
+                    """Navigate to https://www.ycombinator.com/companies/?batch=Winter%202025&batch=Summer%202024&batch=Winter%202024&batch=Spring%202025&batch=Fall%202024&isHiring=true, which displays a list of startups currently hiring. Iterate through each startup in the list sequentially and click each startup. For each startup, click the founders in the active founders section and click their linkedin button to open their linkedin profile and connect with them (for each startup and each founder in each startup you reachout to, please log that in an excel or csv sheet). 
+After all the founders of this startup is processed, navigate back to the list on this url https://www.ycombinator.com/companies/?batch=Winter%202025&batch=Summer%202024&batch=Winter%202024&batch=Spring%202025&batch=Fall%202024&isHiring=true and go to the next startup below and GO STEP BY STEP (STARTUP BY STARTUP FROM TOP TO BOTTOM, DONT JUMP OR SCROLL IF NOT NEEDED UNTIL YOU REACH THE BOTTOM; ALSO DONT OPEN A STARTUP THAT IS NOT IN THIS LIST; STRICTLY FOLLOW THIS LIST  https://www.ycombinator.com/companies/?batch=Winter%202025&batch=Summer%202024&batch=Winter%202024&batch=Spring%202025&batch=Fall%202024&isHiring=true ONE AFTER THE OTHER).  Maintain a log of processed startups (e.g., by storing their names or YC page URLs) to avoid reprocessing, This ensures all startups across all pages are processed.""",
+                    "Navigate to linkedin and connect with all YC startups of current batch who are hiring software engineers and pitch Grupa.io - a platform that helps YC startups like Sully.ai and Afriex hire from the top AI Labs like Google, Meta and OpenAI",
+                    "Navigate to linkedin.com, and connect with all top AI Engineers from Google Deepmind, Meta AI, OpenAI, Anthropic, and Huggingface (use the company filter and linkedin search to filter the people). Pitch Grupa.AI - we are building the workOS for multi-agent collaboration system to do work in real world for startup founders (we are starting with multi-agents for sales, marketing, and customer service and expand to multi-agent collaboration with 3rd party agents)); when trying to connect, if you encounter 'no more personal connections left' while trying to connect with a note, just go back and send the connection to the person without including a note; it will work",
                 ]
 
                 gr.Examples(examples=examples, inputs=question_input)
